@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lista obecności</title>
+
+<!-- ============================================================
+     KONFIGURACJA — wypełnij przed wdrożeniem
+     ============================================================ -->
+<script>
+const CONFIG = {
+  // 1. Azure App Registration → Application (client) ID
+  clientId: "f3e40d3e-9a86-4784-af9a-d5a7fecd6593",
+
+  // 2. Azure → Overview → Directory (tenant) ID
+  tenantId: "ad366acc-5c61-4862-b9c6-241bdbcc4167",
+
+  // 3. Adres Twojej witryny SharePoint (bez ukośnika na końcu)
+  sharePointSite: "https://redlogislogistics.sharepoint.com",
+
+  // 4. Nazwa listy SharePoint (utwórz ją wg instrukcji poniżej)
+  listName: "ListaObecnosci",
+
+  // 5. URL tej strony (do redirect po logowaniu)
+  redirectUri: https://redlogislogistics.sharepoint.com/Shared%20Documents/attendance_tracker_sharepoint.html
+
+};
+</script>
+
+<!-- MSAL (Microsoft Authentication Library) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.7.1/lib/msal-browser.min.js"></script>
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Segoe UI, Arial, sans-serif; background: #f3f2f1; color: #323130; min-height: 100vh; }
+
+/* ---- Auth screen ---- */
+#auth-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 16px; }
+#auth-screen h1 { font-size: 22px; font-weight: 600; }
+#auth-screen p { font-size: 14px; color: #605e5c; max-width: 320px; text-align: center; }
+.ms-btn { background: #0078d4; color: #fff; border: none; border-radius: 4px; padding: 10px 24px; font-size: 14px; cursor: pointer; font-family: inherit; }
+.ms-btn:hover { background: #106ebe; }
+
+/* ---- App ---- */
+#app { display: none; max-width: 100%; padding: 1rem; }
+.topbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 1rem; }
+.topbar h1 { font-size: 18px; font-weight: 600; flex: 1; }
+.user-info { font-size: 12px; color: #605e5c; }
+button.tb { background: #fff; border: 1px solid #d0d0d0; border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 13px; font-family: inherit; color: #323130; }
+button.tb:hover { background: #f3f2f1; }
+button.tb.primary { background: #0078d4; color: #fff; border-color: #0078d4; }
+button.tb.primary:hover { background: #106ebe; }
+
+.month-nav { display: flex; align-items: center; gap: 8px; }
+.month-nav button { background: #fff; border: 1px solid #d0d0d0; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 13px; }
+.month-nav button:hover { background: #f3f2f1; }
+.month-label { font-size: 14px; font-weight: 600; min-width: 130px; text-align: center; }
+
+/* ---- Loading overlay ---- */
+#loading { position: fixed; inset: 0; background: rgba(255,255,255,0.75); display: flex; align-items: center; justify-content: center; z-index: 999; font-size: 14px; color: #605e5c; gap: 10px; }
+#loading.hidden { display: none; }
+.spinner { width: 20px; height: 20px; border: 3px solid #d0d0d0; border-top-color: #0078d4; border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Table ---- */
+.table-wrap { overflow-x: auto; border: 1px solid #e1dfdd; border-radius: 8px; background: #fff; }
+table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+thead th {
+  background: #f3f2f1; font-weight: 600; font-size: 11px; color: #605e5c;
+  padding: 8px 5px; text-align: center; white-space: nowrap;
+  border-bottom: 2px solid #e1dfdd; border-right: 1px solid #e1dfdd;
+  position: sticky; top: 0; z-index: 2;
+}
+thead th:first-child {
+  text-align: left; min-width: 175px; position: sticky; left: 0; z-index: 3;
+  background: #f3f2f1; border-right: 2px solid #c8c6c4;
+  box-shadow: 3px 0 5px -2px rgba(0,0,0,0.1);
+}
+tbody td {
+  padding: 3px 4px; text-align: center; color: #323130;
+  border-bottom: 1px solid #e1dfdd; border-right: 1px solid #e1dfdd;
+}
+tbody td:first-child {
+  text-align: left; padding: 3px 8px;
+  position: sticky; left: 0; z-index: 1;
+  background: #fff; border-right: 2px solid #c8c6c4;
+  box-shadow: 3px 0 5px -2px rgba(0,0,0,0.1);
+}
+tbody tr:hover td { background: #f3f2f1; }
+tbody tr:hover td:first-child { background: #f3f2f1; }
+tbody tr:last-child td { border-bottom: none; }
+
+.name-cell { display: flex; align-items: center; gap: 5px; }
+.name-input { border: none; background: transparent; font-size: 12px; color: #323130; font-family: inherit; width: 130px; outline: none; padding: 2px 4px; border-radius: 3px; }
+.name-input:focus { background: #f3f2f1; border: 1px solid #c8c6c4; }
+.del-btn { background: none; border: none; cursor: pointer; color: #a19f9d; font-size: 13px; padding: 2px 3px; border-radius: 3px; flex-shrink: 0; }
+.del-btn:hover { color: #a4262c; background: #fde7e9; }
+
+select.ss {
+  border: none; background: transparent;
+  font-family: inherit; cursor: pointer;
+  padding: 3px 16px 3px 3px; border-radius: 3px; outline: none;
+  width: 80px; font-size: 10px;
+  -webkit-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 3px center;
+}
+select.ss:focus { background-color: #f3f2f1; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 3px center; }
+select.ss.obecny  { color: #107c10; font-weight: 600; }
+select.ss.uz      { color: #a4262c; font-weight: 600; }
+select.ss.urlop   { color: #0078d4; font-weight: 600; }
+select.ss.nie     { color: #323130; font-weight: 700; font-size: 9px; }
+
+.weekend-col { opacity: 0.4; }
+
+/* ---- Save indicator ---- */
+.save-dot { width: 8px; height: 8px; border-radius: 50%; background: #d0d0d0; display: inline-block; margin-left: 6px; transition: background 0.3s; }
+.save-dot.saving { background: #f7a800; }
+.save-dot.saved  { background: #107c10; }
+
+/* ---- Toast ---- */
+.toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: #323130; color: #fff; border-radius: 4px; padding: 10px 20px; font-size: 13px; z-index: 1000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+.toast.show { opacity: 1; }
+
+/* ---- Setup guide (shown when CONFIG not filled) ---- */
+#setup-guide { background: #fff4ce; border: 1px solid #f7a800; border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 1rem; font-size: 13px; line-height: 1.7; }
+#setup-guide h3 { font-size: 14px; margin-bottom: 8px; }
+#setup-guide code { background: #f3f2f1; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; font-size: 12px; }
+#setup-guide ol { padding-left: 1.2rem; }
+#setup-guide li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading" class="hidden"><div class="spinner"></div> <span id="loading-text">Ładowanie...</span></div>
+
+<!-- Auth screen -->
+<div id="auth-screen">
+  <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/44/Microsoft_logo.svg/512px-Microsoft_logo.svg.png" width="80" alt="Microsoft" style="opacity:0.8" />
+  <h1>Lista obecności</h1>
+  <p>Zaloguj się kontem Microsoft 365, aby uzyskać dostęp do danych na SharePoint.</p>
+  <button class="ms-btn" id="login-btn">Zaloguj się przez Microsoft</button>
+  <p id="auth-error" style="color:#a4262c;font-size:12px;display:none;"></p>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <div id="setup-guide" style="display:none">
+    <h3>⚠️ Wymagana konfiguracja — uzupełnij CONFIG na górze pliku HTML</h3>
+    <ol>
+      <li>Zarejestruj aplikację w <strong>Azure Portal → App registrations → New registration</strong><br>
+        Redirect URI: <code>Single-page application (SPA)</code> → wklej URL tej strony</li>
+      <li>Skopiuj <strong>Application (client) ID</strong> i <strong>Directory (tenant) ID</strong> do CONFIG</li>
+      <li>W Azure → <strong>API permissions</strong> dodaj: <code>Sites.ReadWrite.All</code>, <code>User.Read</code> (Microsoft Graph, Delegated)</li>
+      <li>Na SharePoint utwórz listę o nazwie <code>ListaObecnosci</code> z kolumnami:<br>
+        <code>Title</code> (text) · <code>Miesiac</code> (text) · <code>Rok</code> (number) · <code>Statusy</code> (Multiple lines of text)</li>
+      <li>Zapisz plik HTML na SharePoint/OneDrive i udostępnij użytkownikom</li>
+    </ol>
+  </div>
+
+  <div class="topbar">
+    <h1>Lista obecności <span class="save-dot" id="save-dot" title="Status zapisu"></span></h1>
+    <span class="user-info" id="user-info"></span>
+    <div class="month-nav">
+      <button id="prev-month">&#8592;</button>
+      <span class="month-label" id="month-label"></span>
+      <button id="next-month">&#8594;</button>
+    </div>
+    <button class="tb" id="add-employee">+ Pracownik</button>
+    <button class="tb primary" id="export-btn">&#8595; XLSX</button>
+    <button class="tb" id="logout-btn">Wyloguj</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr id="header-row"></tr></thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Constants ──────────────────────────────────────────────────
+const PL_MONTHS = ['Styczeń','Luty','Marzec','Kwiecień','Maj','Czerwiec','Lipiec','Sierpień','Wrzesień','Październik','Listopad','Grudzień'];
+const PL_DAYS   = ['Nd','Pn','Wt','Śr','Cz','Pt','Sb'];
+const STATUSES  = ['OBECNY','UŻ','URLOP','NIE PRACUJE'];
+const S_CLASS   = { 'OBECNY':'obecny','UŻ':'uz','URLOP':'urlop','NIE PRACUJE':'nie' };
+
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const SCOPES = ['User.Read', 'Sites.ReadWrite.All'];
+
+// ── State ──────────────────────────────────────────────────────
+let msalInstance = null;
+let account = null;
+let siteId = null;
+let listId = null;
+let viewYear, viewMonth;
+let employees = [];       // ['Jan Kowalski', ...]
+let monthStatuses = {};   // { 'YYYY_M': { 'emp||day': status } }
+let spItemIds = {};       // { 'YYYY_M_empName': sharepointItemId }
+let saveTimer = null;
+
+// ── MSAL init ──────────────────────────────────────────────────
+function initMsal() {
+  const isConfigured = CONFIG.clientId !== 'TWÓJ_CLIENT_ID';
+  if (!isConfigured) {
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    document.getElementById('setup-guide').style.display = 'block';
+    loadDemoData();
+    return;
+  }
+  msalInstance = new msal.PublicClientApplication({
+    auth: { clientId: CONFIG.clientId, authority: 'https://login.microsoftonline.com/' + CONFIG.tenantId, redirectUri: CONFIG.redirectUri },
+    cache: { cacheLocation: 'sessionStorage' }
+  });
+  msalInstance.initialize().then(() => {
+    msalInstance.handleRedirectPromise().then(resp => {
+      if (resp) account = resp.account;
+      else {
+        let accounts = msalInstance.getAllAccounts();
+        if (accounts.length) account = accounts[0];
+      }
+      if (account) startApp();
+    }).catch(e => showAuthError(e));
+  });
+}
+
+document.getElementById('login-btn').addEventListener('click', () => {
+  if (!msalInstance) return;
+  msalInstance.loginRedirect({ scopes: SCOPES });
+});
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  msalInstance.logoutPopup().then(() => location.reload());
+});
+
+// ── Token ──────────────────────────────────────────────────────
+async function getToken() {
+  try {
+    let r = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account });
+    return r.accessToken;
+  } catch {
+    let r = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
+    return r.accessToken;
+  }
+}
+
+async function graphGet(url) {
+  let token = await getToken();
+  let r = await fetch(GRAPH + url, { headers: { Authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function graphPost(url, body) {
+  let token = await getToken();
+  let r = await fetch(GRAPH + url, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function graphPatch(url, body) {
+  let token = await getToken();
+  let r = await fetch(GRAPH + url, {
+    method: 'PATCH', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function graphDelete(url) {
+  let token = await getToken();
+  await fetch(GRAPH + url, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
+}
+
+// ── Start app ──────────────────────────────────────────────────
+async function startApp() {
+  showLoading('Łączenie z SharePoint...');
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('user-info').textContent = account.name || account.username;
+
+  try {
+    // Resolve site ID
+    let siteUrl = CONFIG.sharePointSite.replace('https://', '');
+    let host = siteUrl.split('/')[0];
+    let path = siteUrl.split('/').slice(1).join('/');
+    let siteResp = await graphGet('/sites/' + host + ':/' + path);
+    siteId = siteResp.id;
+
+    // Resolve list ID
+    let listsResp = await graphGet('/sites/' + siteId + '/lists?$filter=displayName eq \'' + CONFIG.listName + '\'');
+    if (!listsResp.value.length) throw new Error('Nie znaleziono listy "' + CONFIG.listName + '" na SharePoint. Utwórz ją wg instrukcji.');
+    listId = listsResp.value[0].id;
+
+    // Load all data from SharePoint
+    await loadFromSharePoint();
+    hideLoading();
+  } catch (e) {
+    hideLoading();
+    showToast('Błąd połączenia: ' + e.message);
+    loadDemoData();
+  }
+}
+
+// ── SharePoint data layer ──────────────────────────────────────
+async function loadFromSharePoint() {
+  showLoading('Ładowanie danych...');
+  let resp = await graphGet('/sites/' + siteId + '/lists/' + listId + '/items?$expand=fields&$top=999');
+  let items = resp.value;
+
+  employees = [];
+  monthStatuses = {};
+  spItemIds = {};
+
+  // Special item: employee list stored as Title="__employees__"
+  let empItem = items.find(i => i.fields.Title === '__employees__');
+  if (empItem) {
+    try { employees = JSON.parse(empItem.fields.Statusy || '[]'); } catch { employees = []; }
+    spItemIds['__employees__'] = empItem.id;
+  }
+  if (!employees.length) employees = [];
+
+  // Attendance items
+  items.filter(i => i.fields.Title !== '__employees__').forEach(item => {
+    let f = item.fields;
+    let mk = f.Rok + '_' + f.Miesiac;
+    if (!monthStatuses[mk]) monthStatuses[mk] = {};
+    try { monthStatuses[mk] = Object.assign(monthStatuses[mk], JSON.parse(f.Statusy || '{}')); } catch {}
+    spItemIds[mk + '_' + f.Title] = item.id;
+  });
+
+  let now = new Date();
+  viewYear = now.getFullYear();
+  viewMonth = now.getMonth();
+  renderTable();
+  hideLoading();
+}
+
+async function saveEmployees() {
+  let body = { fields: { Title: '__employees__', Statusy: JSON.stringify(employees), Miesiac: '0', Rok: 0 } };
+  if (spItemIds['__employees__']) {
+    await graphPatch('/sites/' + siteId + '/lists/' + listId + '/items/' + spItemIds['__employees__'], body);
+  } else {
+    let r = await graphPost('/sites/' + siteId + '/lists/' + listId + '/items', body);
+    spItemIds['__employees__'] = r.id;
+  }
+}
+
+async function saveMonthForEmployee(emp, y, m) {
+  let mk = y + '_' + m;
+  let statuses = monthStatuses[mk] || {};
+  // Only statuses for this employee
+  let empStatuses = {};
+  Object.keys(statuses).forEach(k => { if (k.startsWith(emp + '||')) empStatuses[k] = statuses[k]; });
+  let spKey = mk + '_' + emp;
+  let body = { fields: { Title: emp, Miesiac: String(m), Rok: y, Statusy: JSON.stringify(empStatuses) } };
+  if (spItemIds[spKey]) {
+    await graphPatch('/sites/' + siteId + '/lists/' + listId + '/items/' + spItemIds[spKey], body);
+  } else {
+    let r = await graphPost('/sites/' + siteId + '/lists/' + listId + '/items', body);
+    spItemIds[spKey] = r.id;
+  }
+}
+
+async function deleteEmployeeData(empName) {
+  // Delete all SharePoint items for this employee
+  let toDelete = Object.keys(spItemIds).filter(k => k.endsWith('_' + empName) && k !== '__employees__');
+  for (let k of toDelete) {
+    await graphDelete('/sites/' + siteId + '/lists/' + listId + '/items/' + spItemIds[k]);
+    delete spItemIds[k];
+  }
+}
+
+// ── Auto-save with debounce ────────────────────────────────────
+function scheduleSave(emp) {
+  setSaveDot('saving');
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      if (siteId) await saveMonthForEmployee(emp, viewYear, viewMonth);
+      setSaveDot('saved');
+      setTimeout(() => setSaveDot(''), 2000);
+    } catch (e) { showToast('Błąd zapisu: ' + e.message); setSaveDot(''); }
+  }, 800);
+}
+
+function setSaveDot(state) {
+  let dot = document.getElementById('save-dot');
+  dot.className = 'save-dot' + (state ? ' ' + state : '');
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+function monthKey(y, m) { return y + '_' + m; }
+function getStatuses(y, m) { let k = monthKey(y, m); if (!monthStatuses[k]) monthStatuses[k] = {}; return monthStatuses[k]; }
+function sKey(emp, day) { return emp + '||' + day; }
+function getDays(y, m) { return new Date(y, m + 1, 0).getDate(); }
+function isWE(y, m, d) { let w = new Date(y, m, d).getDay(); return w === 0 || w === 6; }
+
+// ── Demo data (when not configured) ───────────────────────────
+function loadDemoData() {
+  let now = new Date();
+  viewYear = now.getFullYear();
+  viewMonth = now.getMonth();
+  employees = ['Jan Kowalski', 'Anna Nowak', 'Piotr Wiśniewski'];
+  monthStatuses = {};
+  renderTable();
+}
+
+// ── Render ─────────────────────────────────────────────────────
+function renderTable() {
+  let days = getDays(viewYear, viewMonth);
+  let statuses = getStatuses(viewYear, viewMonth);
+  document.getElementById('month-label').textContent = PL_MONTHS[viewMonth] + ' ' + viewYear;
+
+  let hRow = document.getElementById('header-row');
+  hRow.innerHTML = '<th>Pracownik</th>';
+  for (let d = 1; d <= days; d++) {
+    let dow = new Date(viewYear, viewMonth, d).getDay();
+    hRow.innerHTML += '<th' + ((dow===0||dow===6)?' class="weekend-col"':'') + '>' + d + '<br><span style="font-weight:400">' + PL_DAYS[dow] + '</span></th>';
+  }
+
+  let tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+  employees.forEach(function(emp, ei) {
+    let tr = document.createElement('tr');
+    let ntd = document.createElement('td');
+    ntd.innerHTML = '<div class="name-cell"><input class="name-input" value="' + emp.replace(/"/g,'&quot;') + '" data-ei="' + ei + '" /><button class="del-btn" data-ei="' + ei + '">✕</button></div>';
+    tr.appendChild(ntd);
+    for (let d = 1; d <= days; d++) {
+      let td = document.createElement('td');
+      if (isWE(viewYear, viewMonth, d)) td.classList.add('weekend-col');
+      let val = statuses[sKey(emp, d)] || 'OBECNY';
+      let sel = document.createElement('select');
+      sel.className = 'ss ' + (S_CLASS[val] || 'obecny');
+      STATUSES.forEach(function(opt) {
+        let o = document.createElement('option');
+        o.value = opt; o.textContent = opt; if (opt === val) o.selected = true;
+        sel.appendChild(o);
+      });
+      sel.dataset.emp = emp; sel.dataset.day = d;
+      sel.addEventListener('change', function() {
+        getStatuses(viewYear, viewMonth)[sKey(this.dataset.emp, this.dataset.day)] = this.value;
+        this.className = 'ss ' + (S_CLASS[this.value] || 'obecny');
+        scheduleSave(this.dataset.emp);
+      });
+      td.appendChild(sel); tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  });
+
+  // Name change
+  tbody.querySelectorAll('.name-input').forEach(inp => {
+    inp.addEventListener('change', async function() {
+      let ei = +this.dataset.ei, oldName = employees[ei];
+      let newName = this.value.trim() || oldName;
+      this.value = newName;
+      employees[ei] = newName;
+      // Rename status keys
+      Object.keys(monthStatuses).forEach(mk => {
+        let s = monthStatuses[mk];
+        Object.keys(s).filter(k => k.startsWith(oldName + '||')).forEach(k => {
+          s[sKey(newName, k.split('||')[1])] = s[k]; delete s[k];
+        });
+      });
+      // Rename SharePoint keys
+      Object.keys(spItemIds).filter(k => k.endsWith('_' + oldName)).forEach(k => {
+        spItemIds[k.replace('_' + oldName, '_' + newName)] = spItemIds[k]; delete spItemIds[k];
+      });
+      setSaveDot('saving');
+      if (siteId) { await saveEmployees(); await saveMonthForEmployee(newName, viewYear, viewMonth); }
+      setSaveDot('saved'); setTimeout(() => setSaveDot(''), 2000);
+    });
+  });
+
+  // Delete
+  tbody.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', async function() {
+      let ei = +this.dataset.ei, empName = employees[ei];
+      if (!confirm('Usunąć pracownika "' + empName + '" ze wszystkich miesięcy?')) return;
+      employees.splice(ei, 1);
+      Object.keys(monthStatuses).forEach(mk => {
+        Object.keys(monthStatuses[mk]).filter(k => k.startsWith(empName + '||')).forEach(k => delete monthStatuses[mk][k]);
+      });
+      showLoading('Usuwanie...');
+      if (siteId) { await deleteEmployeeData(empName); await saveEmployees(); }
+      hideLoading(); renderTable();
+    });
+  });
+}
+
+// ── Navigation ─────────────────────────────────────────────────
+document.getElementById('prev-month').addEventListener('click', () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderTable(); });
+document.getElementById('next-month').addEventListener('click', () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderTable(); });
+
+document.getElementById('add-employee').addEventListener('click', async () => {
+  employees.push('Nowy pracownik');
+  renderTable();
+  let inputs = document.querySelectorAll('.name-input');
+  if (inputs.length) { let last = inputs[inputs.length-1]; last.focus(); last.select(); }
+  if (siteId) { setSaveDot('saving'); await saveEmployees(); setSaveDot('saved'); setTimeout(() => setSaveDot(''), 2000); }
+});
+
+// ── XLSX export ────────────────────────────────────────────────
+document.getElementById('export-btn').addEventListener('click', () => {
+  let wb = XLSX.utils.book_new();
+  let days = getDays(viewYear, viewMonth);
+  let statuses = getStatuses(viewYear, viewMonth);
+  let header = ['Pracownik'];
+  for (let d = 1; d <= days; d++) header.push(d + ' ' + PL_DAYS[new Date(viewYear, viewMonth, d).getDay()]);
+  let rows = [header];
+  employees.forEach(emp => { let row = [emp]; for (let d = 1; d <= days; d++) row.push(statuses[sKey(emp,d)] || 'OBECNY'); rows.push(row); });
+  let ws = XLSX.utils.aoa_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, PL_MONTHS[viewMonth].substring(0,3) + '_' + viewYear);
+  XLSX.writeFile(wb, 'Obecnosc_' + PL_MONTHS[viewMonth] + '_' + viewYear + '.xlsx');
+});
+
+// ── UI helpers ─────────────────────────────────────────────────
+function showLoading(txt) { document.getElementById('loading-text').textContent = txt || 'Ładowanie...'; document.getElementById('loading').classList.remove('hidden'); }
+function hideLoading() { document.getElementById('loading').classList.add('hidden'); }
+function showAuthError(e) { let el = document.getElementById('auth-error'); el.textContent = 'Błąd: ' + (e.message || e); el.style.display = 'block'; }
+function showToast(msg) { let t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3500); }
+
+// ── Boot ───────────────────────────────────────────────────────
+initMsal();
+</script>
+</body>
+</html>
